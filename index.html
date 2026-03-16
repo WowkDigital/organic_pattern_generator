@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Organic Pattern Generator - Mobile Ready</title>
+    <title>Organic Pattern Generator - Full Screen</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://d3js.org/d3.v7.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
@@ -15,12 +15,18 @@
             height: 100%;
             overflow: hidden;
             background-color: #F4EFE6;
-            cursor: crosshair;
-            touch-action: none; /* Prevents default browser gestures while interacting */
+            cursor: default;
+            touch-action: none;
+            font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
         }
+
         canvas {
             display: block;
+            width: 100vw;
+            height: 100vh;
+            cursor: crosshair;
         }
+
         #import-modal {
             display: none;
             position: fixed;
@@ -31,6 +37,7 @@
             z-index: 100;
             padding: 20px;
         }
+
         #toast {
             position: fixed;
             bottom: 20px;
@@ -45,32 +52,47 @@
             pointer-events: none;
             z-index: 1000;
         }
+
         #audio-hint {
-            position: fixed;
+            position: absolute;
             top: 20px;
             left: 20px;
-            background: rgba(255, 255, 255, 0.8);
-            padding: 8px 15px;
-            border-radius: 20px;
-            font-size: 12px;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 8px 16px;
+            border-radius: 50px;
+            font-size: 13px;
             pointer-events: none;
             display: block;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
-            color: #333;
-            font-family: sans-serif;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            color: #1f2937;
             z-index: 50;
+            font-weight: 500;
+        }
+
+        #controls-hint {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.1);
+            padding: 6px 12px;
+            border-radius: 8px;
+            font-size: 11px;
+            color: #4b5563;
+            pointer-events: none;
+            z-index: 40;
         }
     </style>
 </head>
 <body>
 
-    <div id="audio-hint">Tap anywhere to enable bubbles 🫧</div>
+    <div id="audio-hint">Click or tap to enable sound 🫧</div>
     <canvas id="canvas"></canvas>
+    <div id="controls-hint">Scroll to Zoom • Drag to Pan</div>
 
     <!-- Import Modal -->
     <div id="import-modal">
         <div class="bg-white p-6 rounded-xl shadow-2xl w-full max-w-md">
-            <h3 class="text-lg font-bold mb-4">Paste Configuration Code</h3>
+            <h3 class="text-lg font-bold mb-4">Import Configuration Code</h3>
             <textarea id="import-text" class="w-full h-32 p-3 border rounded-lg mb-4 font-mono text-sm" placeholder='{"blobCount": 33, ...}'></textarea>
             <div class="flex justify-end gap-3">
                 <button onclick="closeImportModal()" class="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
@@ -79,13 +101,11 @@
         </div>
     </div>
 
-    <!-- Notification Toast -->
     <div id="toast">Copied to clipboard!</div>
 
     <script>
-        // --- CONFIGURATION AND PARAMETERS ---
+        // --- CONFIGURATION ---
         const config = {
-            // Default settings as requested
             blobCount: 33,
             minRadius: 20,
             maxRadius: 60,
@@ -110,13 +130,13 @@
             bgColor: '#F4EFE6',
             colors: ["#002B5B", "#2B9EB3", "#F4C01E", "#EA7C15", "#EA4C15"],
             
-            // Actions
             regenerateShapes: () => init(true),
             downloadPNG: () => exportCanvas(),
+            downloadSVG: () => exportSVG(),
             exportSettings: () => exportParams(),
             importSettings: () => openImportModal(),
+            resetView: () => resetZoom(),
             
-            // Preset Placeholders (Functions to be added in GUI)
             preset1: () => applyPreset({ blobCount: 15, maxRadius: 100, gap: 10, bgColor: "#E6F4EF" }),
             preset2: () => applyPreset({ blobCount: 100, maxRadius: 30, gap: 1, gravity: 0.3 }),
             preset3: () => applyPreset({ deformation: 0.7, ovalness: 0.8, layers: 3 })
@@ -124,7 +144,9 @@
 
         const canvas = document.getElementById('canvas');
         const ctx = canvas.getContext('2d', { alpha: false });
+        
         let width, height, nodes = [], simulation, gui;
+        let transform = d3.zoomIdentity;
         const mouse = { x: -1000, y: -1000, active: false };
 
         // --- AUDIO ENGINE ---
@@ -158,41 +180,53 @@
             osc.stop(now + 0.2);
         }
 
-        // --- INTERACTION HANDLING (MOUSE & TOUCH) ---
+        // --- ZOOM & NAVIGATION ---
+        const zoom = d3.zoom()
+            .scaleExtent([0.1, 10])
+            .on("zoom", (event) => {
+                transform = event.transform;
+                draw();
+            });
+
+        function resetZoom() {
+            d3.select(canvas).transition().duration(750).call(zoom.transform, d3.zoomIdentity);
+        }
+
+        // --- INTERACTION HANDLING ---
         function updateInteractionPosition(e) {
+            const rect = canvas.getBoundingClientRect();
+            let rawX, rawY;
+            
             if (e.touches && e.touches.length > 0) {
-                mouse.x = e.touches[0].clientX;
-                mouse.y = e.touches[0].clientY;
+                rawX = e.touches[0].clientX - rect.left;
+                rawY = e.touches[0].clientY - rect.top;
+            } else if (e.clientX !== undefined) {
+                rawX = e.clientX - rect.left;
+                rawY = e.clientY - rect.top;
             } else {
-                mouse.x = e.clientX;
-                mouse.y = e.clientY;
+                return;
             }
+
+            // Map screen coordinates to zoomed simulation coordinates
+            mouse.x = (rawX - transform.x) / transform.k;
+            mouse.y = (rawY - transform.y) / transform.k;
             mouse.active = true;
+            
             if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
         }
 
-        window.addEventListener('mousedown', (e) => {
-            initAudio();
-            updateInteractionPosition(e);
-        });
-        window.addEventListener('mousemove', updateInteractionPosition);
-        window.addEventListener('mouseup', () => {});
-        window.addEventListener('mouseleave', () => mouse.active = false);
+        d3.select(canvas)
+            .call(zoom)
+            .on("mousedown.init", initAudio)
+            .on("touchstart.init", initAudio)
+            .on("mousemove", updateInteractionPosition)
+            .on("touchmove", (e) => {
+                updateInteractionPosition(e);
+                if (e.touches.length === 1) e.preventDefault();
+            })
+            .on("mouseleave touchend", () => mouse.active = false);
 
-        // Mobile Touch Events
-        window.addEventListener('touchstart', (e) => {
-            initAudio();
-            updateInteractionPosition(e);
-        }, { passive: false });
-        window.addEventListener('touchmove', (e) => {
-            updateInteractionPosition(e);
-            e.preventDefault(); // Stop scrolling while playing
-        }, { passive: false });
-        window.addEventListener('touchend', () => {
-            mouse.active = false;
-        });
-
-        // --- UI & PARAMS HELPERS ---
+        // --- UI HELPERS ---
         function showToast(msg) {
             const t = document.getElementById('toast');
             t.innerText = msg;
@@ -215,8 +249,8 @@
                 const parsed = JSON.parse(raw);
                 applyPreset(parsed);
                 closeImportModal();
-                showToast("Settings loaded!");
-            } catch (e) { showToast("Error: Invalid data format."); }
+                showToast("Settings loaded successfully!");
+            } catch (e) { showToast("Error: Invalid JSON format."); }
         }
 
         function applyPreset(data) {
@@ -247,22 +281,21 @@
         // --- GUI SETUP ---
         function setupGUI() {
             if (gui) gui.destroy();
-            gui = new lil.GUI({ title: 'Organic Lab v2' });
-            if (window.innerWidth < 600) gui.close(); // Close by default on small screens
-
+            gui = new lil.GUI({ title: 'Organic Lab' });
+            
             const layoutFolder = gui.addFolder('Layout');
-            layoutFolder.add(config, 'blobCount', 0, 500, 1).name('Count').listen().onChange(() => init(true));
-            layoutFolder.add(config, 'minRadius', 5, 50).name('Min Size').onChange(() => init(true));
-            layoutFolder.add(config, 'maxRadius', 30, 200).name('Max Size').onChange(() => init(true));
-            layoutFolder.add(config, 'gap', 0, 50).name('Gap').onChange(() => runSimulation());
+            layoutFolder.add(config, 'blobCount', 0, 1000, 1).name('Count').listen().onChange(() => init(true));
+            layoutFolder.add(config, 'minRadius', 5, 100).name('Min Radius').onChange(() => init(true));
+            layoutFolder.add(config, 'maxRadius', 30, 300).name('Max Radius').onChange(() => init(true));
+            layoutFolder.add(config, 'gap', 0, 100).name('Gap').onChange(() => runSimulation());
             layoutFolder.add(config, 'gravity', 0, 1).name('Gravity').onChange(() => runSimulation());
             layoutFolder.add(config, 'autoCleanup').name('Auto-Cleanup');
             
             const interactiveFolder = gui.addFolder('Interaction');
             interactiveFolder.add(config, 'interactivity').name('Enabled');
-            interactiveFolder.add(config, 'interactionRange', 50, 800).name('Range');
-            interactiveFolder.add(config, 'maxExpansion', 1.0, 5.0).name('Expansion');
-            interactiveFolder.add(config, 'reactionSpeed', 0.01, 0.5).name('Speed');
+            interactiveFolder.add(config, 'interactionRange', 50, 1200).name('Range');
+            interactiveFolder.add(config, 'maxExpansion', 1.0, 10.0).name('Max Scale');
+            interactiveFolder.add(config, 'reactionSpeed', 0.01, 1.0).name('Speed');
 
             const audioFolder = gui.addFolder('Audio');
             audioFolder.add(config, 'audioEnabled').name('Sound On');
@@ -273,20 +306,22 @@
             const shapeFolder = gui.addFolder('Shape');
             shapeFolder.add(config, 'deformation', 0, 1.0).name('Organicness').onChange(() => updateNodeVisuals());
             shapeFolder.add(config, 'ovalness', 0, 1.0).name('Ovalness').onChange(() => updateNodeVisuals());
-            shapeFolder.add(config, 'layers', 1, 10, 1).name('Layers').onChange(draw);
-            shapeFolder.add(config, 'shapePoints', 3, 20, 1).name('Detail').onChange(() => updateNodeVisuals());
+            shapeFolder.add(config, 'layers', 1, 15, 1).name('Layers').onChange(draw);
+            shapeFolder.add(config, 'shapePoints', 3, 30, 1).name('Detail').onChange(() => updateNodeVisuals());
             
             const presetFolder = gui.addFolder('Presets');
-            presetFolder.add(config, 'preset1').name('Preset: Calm Water');
-            presetFolder.add(config, 'preset2').name('Preset: Dense Cells');
-            presetFolder.add(config, 'preset3').name('Preset: Abstract');
+            presetFolder.add(config, 'preset1').name('Calm Water');
+            presetFolder.add(config, 'preset2').name('Dense Cells');
+            presetFolder.add(config, 'preset3').name('Abstract');
             
-            const shareFolder = gui.addFolder('Save / Load');
-            shareFolder.add(config, 'exportSettings').name('Export to Clipboard');
-            shareFolder.add(config, 'importSettings').name('Import Code');
-            shareFolder.add(config, 'downloadPNG').name('Download PNG');
+            const viewFolder = gui.addFolder('View & Export');
+            viewFolder.add(config, 'resetView').name('Reset Zoom/Pan');
+            viewFolder.add(config, 'exportSettings').name('Export to Clipboard');
+            viewFolder.add(config, 'importSettings').name('Import from Code');
+            viewFolder.add(config, 'downloadPNG').name('Download PNG');
+            viewFolder.add(config, 'downloadSVG').name('Download SVG');
             
-            gui.addColor(config, 'bgColor').name('Background').onChange(draw);
+            gui.addColor(config, 'bgColor').name('Canvas BG').onChange(draw);
             gui.add(config, 'regenerateShapes').name('Regenerate All');
         }
 
@@ -321,14 +356,38 @@
                 nodes.push({
                     id: Math.random().toString(36), 
                     baseRadius, currentRadius: baseRadius,
-                    x: old ? old.x : width/2 + (Math.random()-0.5)*100,
-                    y: old ? old.y : height/2 + (Math.random()-0.5)*100,
+                    x: old ? old.x : width/2 + (Math.random()-0.5)*200,
+                    y: old ? old.y : height/2 + (Math.random()-0.5)*200,
                     shapeOffsets: generateShapeOffsets(),
                     stretchX: isVertical ? 1 : stretch, stretchY: isVertical ? stretch : 1,
                     rotation: old ? old.rotation : Math.random() * Math.PI * 2,
                     lastBubble: 0
                 });
             }
+        }
+
+        function getOrganicPathData(radius, node) {
+            const angleStep = (Math.PI * 2) / config.shapePoints;
+            let points = [];
+            for (let i = 0; i < config.shapePoints; i++) {
+                const angle = i * angleStep;
+                const r = radius * (node.shapeOffsets[i] || 1);
+                points.push({ x: Math.cos(angle)*r*node.stretchX, y: Math.sin(angle)*r*node.stretchY });
+            }
+            if (points.length === 0) return "";
+            
+            const startX = (points[0].x + points[points.length-1].x) / 2;
+            const startY = (points[0].y + points[points.length-1].y) / 2;
+            let d = `M ${startX.toFixed(2)},${startY.toFixed(2)}`;
+            
+            for (let i = 0; i < points.length; i++) {
+                const nI = (i + 1) % points.length;
+                const xc = (points[i].x + points[nI].x) / 2;
+                const yc = (points[i].y + points[nI].y) / 2;
+                d += ` Q ${points[i].x.toFixed(2)},${points[i].y.toFixed(2)} ${xc.toFixed(2)},${yc.toFixed(2)}`;
+            }
+            d += " Z";
+            return d;
         }
 
         function drawOrganicPath(ctx, radius, node) {
@@ -350,10 +409,19 @@
         }
 
         function draw() {
+            ctx.save();
             ctx.fillStyle = config.bgColor;
             ctx.fillRect(0, 0, width, height);
+            
+            // Apply Zoom/Pan Transform
+            ctx.translate(transform.x, transform.y);
+            ctx.scale(transform.k, transform.k);
+
             nodes.forEach(node => {
-                ctx.save(); ctx.translate(node.x, node.y); ctx.rotate(node.rotation);
+                ctx.save(); 
+                ctx.translate(node.x, node.y); 
+                ctx.rotate(node.rotation);
+                
                 const layers = config.layers;
                 for (let i = 0; i < layers; i++) {
                     let scale = i === 0 ? 1.0 : (i === 1 ? 0.72 : 0.72 - (i - 1) * (0.55 / (layers - 1)));
@@ -364,6 +432,7 @@
                 }
                 ctx.restore();
             });
+            ctx.restore();
         }
 
         function runSimulation() {
@@ -377,7 +446,7 @@
                 .alpha(0.5).alphaDecay(0.01); 
 
             simulation.on("tick", () => {
-                const margin = 200;
+                const margin = 500;
                 let nodesWereRemoved = false;
 
                 if (config.autoCleanup) {
@@ -425,12 +494,16 @@
         }
 
         function resize() {
-            width = window.innerWidth; height = window.innerHeight;
+            width = window.innerWidth;
+            height = window.innerHeight;
             const dpr = window.devicePixelRatio || 1;
-            canvas.style.width = width + 'px'; canvas.style.height = height + 'px';
-            canvas.width = width * dpr; canvas.height = height * dpr;
+            
+            canvas.width = width * dpr;
+            canvas.height = height * dpr;
             ctx.scale(dpr, dpr);
+            
             if (simulation) runSimulation();
+            else draw();
         }
 
         function exportCanvas() {
@@ -438,6 +511,32 @@
             link.download = `organic_art_${Date.now()}.png`;
             link.href = canvas.toDataURL('image/png');
             link.click();
+        }
+
+        function exportSVG() {
+            let svgContent = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`;
+            svgContent += `<rect width="100%" height="100%" fill="${config.bgColor}" />`;
+            nodes.forEach((node, index) => {
+                const rotationDeg = (node.rotation * 180) / Math.PI;
+                svgContent += `  <g id="blob_${index}" transform="translate(${node.x.toFixed(2)}, ${node.y.toFixed(2)}) rotate(${rotationDeg.toFixed(2)})">`;
+                const layers = config.layers;
+                for (let i = 0; i < layers; i++) {
+                    let scale = i === 0 ? 1.0 : (i === 1 ? 0.72 : 0.72 - (i - 1) * (0.55 / (layers - 1)));
+                    const color = config.colors[i % config.colors.length];
+                    const d = getOrganicPathData(node.currentRadius * scale, node);
+                    if (d) svgContent += `    <path d="${d}" fill="${color}" stroke="${color}" stroke-width="0.5" />`;
+                }
+                svgContent += `  </g>`;
+            });
+            svgContent += `</svg>`;
+            const blob = new Blob([svgContent], {type: 'image/svg+xml;charset=utf-8'});
+            const url = URL.createObjectURL(blob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `organic_art_${Date.now()}.svg`;
+            link.click();
+            URL.revokeObjectURL(url);
+            showToast("SVG exported successfully!");
         }
 
         function init(recreate = true) {
