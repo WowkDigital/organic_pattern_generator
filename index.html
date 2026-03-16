@@ -117,7 +117,7 @@
     </div>
 
     <canvas id="canvas"></canvas>
-    <div id="controls-hint">Scroll to Zoom • Drag to Pan</div>
+    <div id="controls-hint">Desktop: Scroll to Zoom • Mobile: 2-Finger Pinch</div>
 
     <!-- Import Modal -->
     <div id="import-modal">
@@ -228,9 +228,17 @@
         // --- ZOOM & NAVIGATION ---
         const zoom = d3.zoom()
             .scaleExtent([0.1, 10])
+            .filter((event) => {
+                // Ignore single-touch events in D3 Zoom (so they can trigger blob interaction instead)
+                if (event.type === "touchstart" || event.type === "touchmove") {
+                    return event.touches && event.touches.length >= 2;
+                }
+                // Allow left mouse button and wheel
+                return event.button === 0 || event.type === 'wheel';
+            })
             .on("zoom", (event) => {
                 transform = event.transform;
-                draw();
+                draw(); // Redraw immediately on zoom to avoid lag when physics is sleeping
             });
 
         function resetZoom() {
@@ -257,16 +265,29 @@
             mouse.active = true;
             
             if (isAudioStarted && audioCtx.state === 'suspended') audioCtx.resume();
+
+            // Wake up simulation on interaction so blobs can move and resize
+            if (simulation && simulation.alpha() < 0.1) {
+                simulation.alpha(0.1).restart();
+            }
         }
 
         d3.select(canvas)
             .call(zoom)
             .on("mousemove", updateInteractionPosition)
             .on("touchmove", (event) => {
-                updateInteractionPosition(event);
-                if (event.touches.length === 1) event.preventDefault();
+                if (event.touches && event.touches.length === 1) {
+                    updateInteractionPosition(event);
+                    event.preventDefault(); // Prevent native scrolling when swiping a blob
+                }
             })
-            .on("mouseleave touchend", () => mouse.active = false);
+            .on("mouseleave touchend", () => {
+                mouse.active = false;
+                // Wake up physics slightly to allow blobs to gracefully shrink back to base size
+                if (simulation && simulation.alpha() < 0.1) {
+                    simulation.alpha(0.1).restart();
+                }
+            });
 
         // Native global listeners for audio fallback
         window.addEventListener('mousedown', initAudio);
@@ -383,6 +404,7 @@
                 node.stretchY = isVertical ? stretch : 1;
             });
             draw();
+            if (simulation && simulation.alpha() < 0.1) simulation.alpha(0.1).restart();
         }
 
         function generateShapeOffsets() {
@@ -490,11 +512,12 @@
                 .force("collide", d3.forceCollide().radius(d => {
                     return (d.currentRadius * Math.max(d.stretchX, d.stretchY)) + config.gap;
                 }).iterations(4))
-                .alpha(0.5).alphaDecay(0.01); 
+                .alpha(0.5).alphaDecay(0.02); 
 
             simulation.on("tick", () => {
                 const margin = 500;
                 let nodesWereRemoved = false;
+                let sizesChanging = false;
 
                 if (config.autoCleanup) {
                     const prevCount = nodes.length;
@@ -526,16 +549,27 @@
                         }
                     }
                     const diff = targetRadius - node.currentRadius;
-                    const speed = diff > 0 ? config.reactionSpeed : config.reactionSpeed * 0.15;
-                    node.currentRadius += diff * speed;
+                    if (Math.abs(diff) > 0.05) {
+                        sizesChanging = true;
+                        const speed = diff > 0 ? config.reactionSpeed : config.reactionSpeed * 0.15;
+                        node.currentRadius += diff * speed;
+                    } else {
+                        node.currentRadius = targetRadius;
+                    }
                 });
 
                 if (nodesWereRemoved) simulation.nodes(nodes);
 
                 if (config.interactivity) {
                     simulation.force("collide").radius(d => (d.currentRadius * Math.max(d.stretchX, d.stretchY)) + config.gap);
-                    if (simulation.alpha() < 0.1) simulation.alpha(0.15);
+                    
+                    // WAKE UP LOGIC: Keep simulation slightly awake ONLY if blobs are resizing.
+                    // This allows them to cleanly settle into a completely stable state when not interacting.
+                    if (sizesChanging && simulation.alpha() < 0.05) {
+                        simulation.alpha(0.05);
+                    }
                 }
+                
                 draw();
             });
         }
