@@ -85,7 +85,7 @@
 </head>
 <body>
 
-    <div id="audio-hint">Click or tap to enable sound 🫧</div>
+    <div id="audio-hint">Click or tap anywhere to enable sound 🫧</div>
     <canvas id="canvas"></canvas>
     <div id="controls-hint">Scroll to Zoom • Drag to Pan</div>
 
@@ -155,10 +155,17 @@
 
         function initAudio() {
             if (isAudioStarted) return;
+            
             audioCtx = new (window.AudioContext || window.webkitAudioContext)();
             masterGain = audioCtx.createGain();
             masterGain.gain.setValueAtTime(config.masterVolume, audioCtx.currentTime);
             masterGain.connect(audioCtx.destination);
+            
+            // Resume if suspended (common browser behavior)
+            if (audioCtx.state === 'suspended') {
+                audioCtx.resume();
+            }
+            
             isAudioStarted = true;
             document.getElementById('audio-hint').style.display = 'none';
         }
@@ -212,19 +219,24 @@
             mouse.y = (rawY - transform.y) / transform.k;
             mouse.active = true;
             
-            if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+            // Attempt audio resume on every move if initialized but suspended
+            if (isAudioStarted && audioCtx.state === 'suspended') audioCtx.resume();
         }
 
+        // D3 Event Handling
         d3.select(canvas)
             .call(zoom)
-            .on("mousedown.init", initAudio)
-            .on("touchstart.init", initAudio)
             .on("mousemove", updateInteractionPosition)
             .on("touchmove", (e) => {
                 updateInteractionPosition(e);
                 if (e.touches.length === 1) e.preventDefault();
             })
             .on("mouseleave touchend", () => mouse.active = false);
+
+        // Native Listeners for Robust Audio Initialization
+        // We use native listeners because D3 Zoom might intercept some event types
+        canvas.addEventListener('mousedown', initAudio);
+        canvas.addEventListener('touchstart', initAudio, { passive: true });
 
         // --- UI HELPERS ---
         function showToast(msg) {
