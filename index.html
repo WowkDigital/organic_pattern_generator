@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Organic Pattern Generator - Mobile Ready</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/lil-gui@0.19"></script>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #F4EFE6;
+            cursor: crosshair;
+            touch-action: none; /* Prevents default browser gestures while interacting */
+        }
+        canvas {
+            display: block;
+        }
+        #import-modal {
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.6);
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+            padding: 20px;
+        }
+        #toast {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #333;
+            color: white;
+            padding: 10px 20px;
+            border-radius: 8px;
+            opacity: 0;
+            transition: opacity 0.3s;
+            pointer-events: none;
+            z-index: 1000;
+        }
+        #audio-hint {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background: rgba(255, 255, 255, 0.8);
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 12px;
+            pointer-events: none;
+            display: block;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            color: #333;
+            font-family: sans-serif;
+            z-index: 50;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="audio-hint">Tap anywhere to enable bubbles 🫧</div>
+    <canvas id="canvas"></canvas>
+
+    <!-- Import Modal -->
+    <div id="import-modal">
+        <div class="bg-white p-6 rounded-xl shadow-2xl w-full max-w-md">
+            <h3 class="text-lg font-bold mb-4">Paste Configuration Code</h3>
+            <textarea id="import-text" class="w-full h-32 p-3 border rounded-lg mb-4 font-mono text-sm" placeholder='{"blobCount": 33, ...}'></textarea>
+            <div class="flex justify-end gap-3">
+                <button onclick="closeImportModal()" class="px-4 py-2 text-gray-600 hover:bg-gray-100 rounded-lg">Cancel</button>
+                <button onclick="applyImport()" class="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700">Load</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Notification Toast -->
+    <div id="toast">Copied to clipboard!</div>
+
+    <script>
+        // --- CONFIGURATION AND PARAMETERS ---
+        const config = {
+            // Default settings as requested
+            blobCount: 33,
+            minRadius: 20,
+            maxRadius: 60,
+            gap: 2.55,
+            deformation: 0.3,
+            ovalness: 0.4,
+            layers: 5,
+            shapePoints: 8,
+            gravity: 0.104,
+            autoCleanup: true,
+            
+            interactivity: true,
+            interactionRange: 171.45,
+            maxExpansion: 2.474,
+            reactionSpeed: 0.1,
+
+            audioEnabled: true,
+            masterVolume: 0.5,
+            bubbleDensity: 0.5,
+            basePitch: 600, 
+            
+            bgColor: '#F4EFE6',
+            colors: ["#002B5B", "#2B9EB3", "#F4C01E", "#EA7C15", "#EA4C15"],
+            
+            // Actions
+            regenerateShapes: () => init(true),
+            downloadPNG: () => exportCanvas(),
+            exportSettings: () => exportParams(),
+            importSettings: () => openImportModal(),
+            
+            // Preset Placeholders (Functions to be added in GUI)
+            preset1: () => applyPreset({ blobCount: 15, maxRadius: 100, gap: 10, bgColor: "#E6F4EF" }),
+            preset2: () => applyPreset({ blobCount: 100, maxRadius: 30, gap: 1, gravity: 0.3 }),
+            preset3: () => applyPreset({ deformation: 0.7, ovalness: 0.8, layers: 3 })
+        };
+
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d', { alpha: false });
+        let width, height, nodes = [], simulation, gui;
+        const mouse = { x: -1000, y: -1000, active: false };
+
+        // --- AUDIO ENGINE ---
+        let audioCtx, masterGain;
+        let isAudioStarted = false;
+
+        function initAudio() {
+            if (isAudioStarted) return;
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            masterGain = audioCtx.createGain();
+            masterGain.gain.setValueAtTime(config.masterVolume, audioCtx.currentTime);
+            masterGain.connect(audioCtx.destination);
+            isAudioStarted = true;
+            document.getElementById('audio-hint').style.display = 'none';
+        }
+
+        function triggerBubble(freq, volume) {
+            if (!isAudioStarted || !config.audioEnabled || !mouse.active) return;
+            const now = audioCtx.currentTime;
+            const osc = audioCtx.createOscillator();
+            const g = audioCtx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(freq, now);
+            osc.frequency.exponentialRampToValueAtTime(freq * 1.8, now + 0.08);
+            g.gain.setValueAtTime(0, now);
+            g.gain.linearRampToValueAtTime(volume * config.masterVolume, now + 0.01);
+            g.gain.exponentialRampToValueAtTime(0.001, now + 0.12);
+            osc.connect(g);
+            g.connect(masterGain);
+            osc.start(now);
+            osc.stop(now + 0.2);
+        }
+
+        // --- INTERACTION HANDLING (MOUSE & TOUCH) ---
+        function updateInteractionPosition(e) {
+            if (e.touches && e.touches.length > 0) {
+                mouse.x = e.touches[0].clientX;
+                mouse.y = e.touches[0].clientY;
+            } else {
+                mouse.x = e.clientX;
+                mouse.y = e.clientY;
+            }
+            mouse.active = true;
+            if (audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
+        }
+
+        window.addEventListener('mousedown', (e) => {
+            initAudio();
+            updateInteractionPosition(e);
+        });
+        window.addEventListener('mousemove', updateInteractionPosition);
+        window.addEventListener('mouseup', () => {});
+        window.addEventListener('mouseleave', () => mouse.active = false);
+
+        // Mobile Touch Events
+        window.addEventListener('touchstart', (e) => {
+            initAudio();
+            updateInteractionPosition(e);
+        }, { passive: false });
+        window.addEventListener('touchmove', (e) => {
+            updateInteractionPosition(e);
+            e.preventDefault(); // Stop scrolling while playing
+        }, { passive: false });
+        window.addEventListener('touchend', () => {
+            mouse.active = false;
+        });
+
+        // --- UI & PARAMS HELPERS ---
+        function showToast(msg) {
+            const t = document.getElementById('toast');
+            t.innerText = msg;
+            t.style.opacity = '1';
+            setTimeout(() => t.style.opacity = '0', 2000);
+        }
+
+        function openImportModal() {
+            document.getElementById('import-text').value = '';
+            document.getElementById('import-modal').style.display = 'flex';
+        }
+
+        function closeImportModal() {
+            document.getElementById('import-modal').style.display = 'none';
+        }
+
+        function applyImport() {
+            const raw = document.getElementById('import-text').value;
+            try {
+                const parsed = JSON.parse(raw);
+                applyPreset(parsed);
+                closeImportModal();
+                showToast("Settings loaded!");
+            } catch (e) { showToast("Error: Invalid data format."); }
+        }
+
+        function applyPreset(data) {
+            Object.keys(data).forEach(key => {
+                if (config.hasOwnProperty(key) && typeof config[key] !== 'function') {
+                    config[key] = data[key];
+                }
+            });
+            setupGUI();
+            init(true);
+        }
+
+        function exportParams() {
+            const dataToSave = {};
+            Object.keys(config).forEach(key => {
+                if (typeof config[key] !== 'function') dataToSave[key] = config[key];
+            });
+            const json = JSON.stringify(dataToSave);
+            const el = document.createElement('textarea');
+            el.value = json;
+            document.body.appendChild(el);
+            el.select();
+            document.execCommand('copy');
+            document.body.removeChild(el);
+            showToast("Copied to clipboard!");
+        }
+
+        // --- GUI SETUP ---
+        function setupGUI() {
+            if (gui) gui.destroy();
+            gui = new lil.GUI({ title: 'Organic Lab v2' });
+            if (window.innerWidth < 600) gui.close(); // Close by default on small screens
+
+            const layoutFolder = gui.addFolder('Layout');
+            layoutFolder.add(config, 'blobCount', 0, 500, 1).name('Count').listen().onChange(() => init(true));
+            layoutFolder.add(config, 'minRadius', 5, 50).name('Min Size').onChange(() => init(true));
+            layoutFolder.add(config, 'maxRadius', 30, 200).name('Max Size').onChange(() => init(true));
+            layoutFolder.add(config, 'gap', 0, 50).name('Gap').onChange(() => runSimulation());
+            layoutFolder.add(config, 'gravity', 0, 1).name('Gravity').onChange(() => runSimulation());
+            layoutFolder.add(config, 'autoCleanup').name('Auto-Cleanup');
+            
+            const interactiveFolder = gui.addFolder('Interaction');
+            interactiveFolder.add(config, 'interactivity').name('Enabled');
+            interactiveFolder.add(config, 'interactionRange', 50, 800).name('Range');
+            interactiveFolder.add(config, 'maxExpansion', 1.0, 5.0).name('Expansion');
+            interactiveFolder.add(config, 'reactionSpeed', 0.01, 0.5).name('Speed');
+
+            const audioFolder = gui.addFolder('Audio');
+            audioFolder.add(config, 'audioEnabled').name('Sound On');
+            audioFolder.add(config, 'masterVolume', 0, 1).name('Volume');
+            audioFolder.add(config, 'bubbleDensity', 0, 1).name('Density');
+            audioFolder.add(config, 'basePitch', 50, 2000).name('Pitch');
+
+            const shapeFolder = gui.addFolder('Shape');
+            shapeFolder.add(config, 'deformation', 0, 1.0).name('Organicness').onChange(() => updateNodeVisuals());
+            shapeFolder.add(config, 'ovalness', 0, 1.0).name('Ovalness').onChange(() => updateNodeVisuals());
+            shapeFolder.add(config, 'layers', 1, 10, 1).name('Layers').onChange(draw);
+            shapeFolder.add(config, 'shapePoints', 3, 20, 1).name('Detail').onChange(() => updateNodeVisuals());
+            
+            const presetFolder = gui.addFolder('Presets');
+            presetFolder.add(config, 'preset1').name('Preset: Calm Water');
+            presetFolder.add(config, 'preset2').name('Preset: Dense Cells');
+            presetFolder.add(config, 'preset3').name('Preset: Abstract');
+            
+            const shareFolder = gui.addFolder('Save / Load');
+            shareFolder.add(config, 'exportSettings').name('Export to Clipboard');
+            shareFolder.add(config, 'importSettings').name('Import Code');
+            shareFolder.add(config, 'downloadPNG').name('Download PNG');
+            
+            gui.addColor(config, 'bgColor').name('Background').onChange(draw);
+            gui.add(config, 'regenerateShapes').name('Regenerate All');
+        }
+
+        // --- RENDERING & PHYSICS ---
+        function updateNodeVisuals() {
+            nodes.forEach(node => {
+                node.shapeOffsets = generateShapeOffsets();
+                const isVertical = Math.random() > 0.5;
+                const stretch = 1 + Math.random() * config.ovalness;
+                node.stretchX = isVertical ? 1 : stretch;
+                node.stretchY = isVertical ? stretch : 1;
+            });
+            draw();
+        }
+
+        function generateShapeOffsets() {
+            const offsets = [];
+            for (let j = 0; j < config.shapePoints; j++) {
+                offsets.push(1 + (Math.random() * 2 - 1) * config.deformation);
+            }
+            return offsets;
+        }
+
+        function createNodes() {
+            const oldNodes = [...nodes];
+            nodes = [];
+            for (let i = 0; i < config.blobCount; i++) {
+                const baseRadius = config.minRadius + Math.random() * (config.maxRadius - config.minRadius);
+                const isVertical = Math.random() > 0.5;
+                const stretch = 1 + Math.random() * config.ovalness;
+                const old = oldNodes[i];
+                nodes.push({
+                    id: Math.random().toString(36), 
+                    baseRadius, currentRadius: baseRadius,
+                    x: old ? old.x : width/2 + (Math.random()-0.5)*100,
+                    y: old ? old.y : height/2 + (Math.random()-0.5)*100,
+                    shapeOffsets: generateShapeOffsets(),
+                    stretchX: isVertical ? 1 : stretch, stretchY: isVertical ? stretch : 1,
+                    rotation: old ? old.rotation : Math.random() * Math.PI * 2,
+                    lastBubble: 0
+                });
+            }
+        }
+
+        function drawOrganicPath(ctx, radius, node) {
+            ctx.beginPath();
+            const angleStep = (Math.PI * 2) / config.shapePoints;
+            let points = [];
+            for (let i = 0; i < config.shapePoints; i++) {
+                const angle = i * angleStep;
+                const r = radius * (node.shapeOffsets[i] || 1);
+                points.push({ x: Math.cos(angle)*r*node.stretchX, y: Math.sin(angle)*r*node.stretchY });
+            }
+            if (points.length === 0) return;
+            ctx.moveTo((points[0].x + points[points.length-1].x)/2, (points[0].y + points[points.length-1].y)/2);
+            for (let i = 0; i < points.length; i++) {
+                const nI = (i + 1) % points.length;
+                ctx.quadraticCurveTo(points[i].x, points[i].y, (points[i].x + points[nI].x)/2, (points[i].y + points[nI].y)/2);
+            }
+            ctx.closePath(); ctx.fill(); ctx.stroke(); 
+        }
+
+        function draw() {
+            ctx.fillStyle = config.bgColor;
+            ctx.fillRect(0, 0, width, height);
+            nodes.forEach(node => {
+                ctx.save(); ctx.translate(node.x, node.y); ctx.rotate(node.rotation);
+                const layers = config.layers;
+                for (let i = 0; i < layers; i++) {
+                    let scale = i === 0 ? 1.0 : (i === 1 ? 0.72 : 0.72 - (i - 1) * (0.55 / (layers - 1)));
+                    ctx.fillStyle = config.colors[i % config.colors.length];
+                    ctx.strokeStyle = config.colors[i % config.colors.length];
+                    ctx.lineWidth = 0.5;
+                    drawOrganicPath(ctx, node.currentRadius * scale, node);
+                }
+                ctx.restore();
+            });
+        }
+
+        function runSimulation() {
+            if (simulation) simulation.stop();
+            simulation = d3.forceSimulation(nodes)
+                .force("x", d3.forceX(width / 2).strength(config.gravity))
+                .force("y", d3.forceY(height / 2).strength(config.gravity))
+                .force("collide", d3.forceCollide().radius(d => {
+                    return (d.currentRadius * Math.max(d.stretchX, d.stretchY)) + config.gap;
+                }).iterations(4))
+                .alpha(0.5).alphaDecay(0.01); 
+
+            simulation.on("tick", () => {
+                const margin = 200;
+                let nodesWereRemoved = false;
+
+                if (config.autoCleanup) {
+                    const prevCount = nodes.length;
+                    nodes = nodes.filter(n => (
+                        n.x > -margin && n.x < width + margin && 
+                        n.y > -margin && n.y < height + margin
+                    ));
+                    if (nodes.length !== prevCount) {
+                        nodesWereRemoved = true;
+                        config.blobCount = nodes.length;
+                    }
+                }
+
+                nodes.forEach(node => {
+                    let targetRadius = node.baseRadius;
+                    if (config.interactivity && mouse.active) {
+                        const dx = node.x - mouse.x, dy = node.y - mouse.y;
+                        const dist = Math.sqrt(dx * dx + dy * dy);
+                        if (dist < config.interactionRange) {
+                            const factor = Math.pow(1 - (dist / config.interactionRange), 2);
+                            targetRadius = node.baseRadius * (1 + factor * (config.maxExpansion - 1));
+                            
+                            const diff = targetRadius - node.currentRadius;
+                            if (diff > 1.8 && Math.random() < config.bubbleDensity * 0.15 && Date.now() - node.lastBubble > 120) {
+                                const pitch = config.basePitch * (45 / node.baseRadius) + (Math.random() * 150);
+                                triggerBubble(pitch, factor * 0.4);
+                                node.lastBubble = Date.now();
+                            }
+                        }
+                    }
+                    const diff = targetRadius - node.currentRadius;
+                    const speed = diff > 0 ? config.reactionSpeed : config.reactionSpeed * 0.15;
+                    node.currentRadius += diff * speed;
+                });
+
+                if (nodesWereRemoved) simulation.nodes(nodes);
+
+                if (config.interactivity) {
+                    simulation.force("collide").radius(d => (d.currentRadius * Math.max(d.stretchX, d.stretchY)) + config.gap);
+                    if (simulation.alpha() < 0.1) simulation.alpha(0.15);
+                }
+                draw();
+            });
+        }
+
+        function resize() {
+            width = window.innerWidth; height = window.innerHeight;
+            const dpr = window.devicePixelRatio || 1;
+            canvas.style.width = width + 'px'; canvas.style.height = height + 'px';
+            canvas.width = width * dpr; canvas.height = height * dpr;
+            ctx.scale(dpr, dpr);
+            if (simulation) runSimulation();
+        }
+
+        function exportCanvas() {
+            const link = document.createElement('a');
+            link.download = `organic_art_${Date.now()}.png`;
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+        }
+
+        function init(recreate = true) {
+            resize(); 
+            if (recreate) createNodes();
+            runSimulation();
+        }
+
+        window.addEventListener('resize', resize);
+        setupGUI();
+        init(true);
+    </script>
+</body>
+</html>
