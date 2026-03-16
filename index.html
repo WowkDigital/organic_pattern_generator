@@ -53,20 +53,46 @@
             z-index: 1000;
         }
 
-        #audio-hint {
+        #audio-controls {
             position: absolute;
             top: 20px;
             left: 20px;
-            background: rgba(255, 255, 255, 0.9);
-            padding: 8px 16px;
-            border-radius: 50px;
-            font-size: 13px;
+            z-index: 100;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
             pointer-events: none;
-            display: block;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+
+        .ui-element {
+            pointer-events: auto;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 10px 20px;
+            border-radius: 50px;
+            font-size: 14px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
             color: #1f2937;
-            z-index: 50;
-            font-weight: 500;
+            font-weight: 600;
+            border: none;
+            transition: all 0.2s;
+        }
+
+        #enable-audio-btn {
+            background: #2563eb;
+            color: white;
+            cursor: pointer;
+            animation: pulse 2s infinite;
+        }
+
+        #enable-audio-btn:hover {
+            background: #1d4ed8;
+            transform: scale(1.05);
+        }
+
+        @keyframes pulse {
+            0% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.4); }
+            70% { box-shadow: 0 0 0 10px rgba(37, 99, 235, 0); }
+            100% { box-shadow: 0 0 0 0 rgba(37, 99, 235, 0); }
         }
 
         #controls-hint {
@@ -85,7 +111,11 @@
 </head>
 <body>
 
-    <div id="audio-hint">Click or tap anywhere to enable sound 🫧</div>
+    <div id="audio-controls">
+        <button id="enable-audio-btn" class="ui-element" onclick="initAudio()">Enable Sound 🫧</button>
+        <div id="audio-status" class="ui-element" style="display: none;">Audio Active 🔊</div>
+    </div>
+
     <canvas id="canvas"></canvas>
     <div id="controls-hint">Scroll to Zoom • Drag to Pan</div>
 
@@ -156,18 +186,26 @@
         function initAudio() {
             if (isAudioStarted) return;
             
-            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-            masterGain = audioCtx.createGain();
-            masterGain.gain.setValueAtTime(config.masterVolume, audioCtx.currentTime);
-            masterGain.connect(audioCtx.destination);
-            
-            // Resume if suspended (common browser behavior)
-            if (audioCtx.state === 'suspended') {
-                audioCtx.resume();
+            try {
+                audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+                masterGain = audioCtx.createGain();
+                masterGain.gain.setValueAtTime(config.masterVolume, audioCtx.currentTime);
+                masterGain.connect(audioCtx.destination);
+                
+                if (audioCtx.state === 'suspended') {
+                    audioCtx.resume();
+                }
+                
+                isAudioStarted = true;
+                document.getElementById('enable-audio-btn').style.display = 'none';
+                document.getElementById('audio-status').style.display = 'block';
+                setTimeout(() => {
+                    document.getElementById('audio-status').style.opacity = '0';
+                    setTimeout(() => { document.getElementById('audio-status').style.display = 'none'; }, 500);
+                }, 2000);
+            } catch (e) {
+                console.error("Audio failed to initialize", e);
             }
-            
-            isAudioStarted = true;
-            document.getElementById('audio-hint').style.display = 'none';
         }
 
         function triggerBubble(freq, volume) {
@@ -214,29 +252,25 @@
                 return;
             }
 
-            // Map screen coordinates to zoomed simulation coordinates
             mouse.x = (rawX - transform.x) / transform.k;
             mouse.y = (rawY - transform.y) / transform.k;
             mouse.active = true;
             
-            // Attempt audio resume on every move if initialized but suspended
             if (isAudioStarted && audioCtx.state === 'suspended') audioCtx.resume();
         }
 
-        // D3 Event Handling
         d3.select(canvas)
             .call(zoom)
             .on("mousemove", updateInteractionPosition)
-            .on("touchmove", (e) => {
-                updateInteractionPosition(e);
-                if (e.touches.length === 1) e.preventDefault();
+            .on("touchmove", (event) => {
+                updateInteractionPosition(event);
+                if (event.touches.length === 1) event.preventDefault();
             })
             .on("mouseleave touchend", () => mouse.active = false);
 
-        // Native Listeners for Robust Audio Initialization
-        // We use native listeners because D3 Zoom might intercept some event types
-        canvas.addEventListener('mousedown', initAudio);
-        canvas.addEventListener('touchstart', initAudio, { passive: true });
+        // Native global listeners for audio fallback
+        window.addEventListener('mousedown', initAudio);
+        window.addEventListener('touchstart', initAudio, { passive: true });
 
         // --- UI HELPERS ---
         function showToast(msg) {
@@ -261,8 +295,8 @@
                 const parsed = JSON.parse(raw);
                 applyPreset(parsed);
                 closeImportModal();
-                showToast("Settings loaded successfully!");
-            } catch (e) { showToast("Error: Invalid JSON format."); }
+                showToast("Settings loaded!");
+            } catch (e) { showToast("Invalid JSON format."); }
         }
 
         function applyPreset(data) {
@@ -311,7 +345,9 @@
 
             const audioFolder = gui.addFolder('Audio');
             audioFolder.add(config, 'audioEnabled').name('Sound On');
-            audioFolder.add(config, 'masterVolume', 0, 1).name('Volume');
+            audioFolder.add(config, 'masterVolume', 0, 1).name('Volume').onChange(v => {
+                if (masterGain) masterGain.gain.setTargetAtTime(v, audioCtx.currentTime, 0.1);
+            });
             audioFolder.add(config, 'bubbleDensity', 0, 1).name('Density');
             audioFolder.add(config, 'basePitch', 50, 2000).name('Pitch');
 
@@ -328,8 +364,8 @@
             
             const viewFolder = gui.addFolder('View & Export');
             viewFolder.add(config, 'resetView').name('Reset Zoom/Pan');
-            viewFolder.add(config, 'exportSettings').name('Export to Clipboard');
-            viewFolder.add(config, 'importSettings').name('Import from Code');
+            viewFolder.add(config, 'exportSettings').name('Export Settings');
+            viewFolder.add(config, 'importSettings').name('Import Code');
             viewFolder.add(config, 'downloadPNG').name('Download PNG');
             viewFolder.add(config, 'downloadSVG').name('Download SVG');
             
@@ -366,7 +402,7 @@
                 const stretch = 1 + Math.random() * config.ovalness;
                 const old = oldNodes[i];
                 nodes.push({
-                    id: Math.random().toString(36), 
+                    id: Math.random().toString(36).substr(2, 9), 
                     baseRadius, currentRadius: baseRadius,
                     x: old ? old.x : width/2 + (Math.random()-0.5)*200,
                     y: old ? old.y : height/2 + (Math.random()-0.5)*200,
@@ -425,7 +461,6 @@
             ctx.fillStyle = config.bgColor;
             ctx.fillRect(0, 0, width, height);
             
-            // Apply Zoom/Pan Transform
             ctx.translate(transform.x, transform.y);
             ctx.scale(transform.k, transform.k);
 
@@ -509,11 +544,9 @@
             width = window.innerWidth;
             height = window.innerHeight;
             const dpr = window.devicePixelRatio || 1;
-            
             canvas.width = width * dpr;
             canvas.height = height * dpr;
             ctx.scale(dpr, dpr);
-            
             if (simulation) runSimulation();
             else draw();
         }
@@ -530,10 +563,9 @@
             svgContent += `<rect width="100%" height="100%" fill="${config.bgColor}" />`;
             nodes.forEach((node, index) => {
                 const rotationDeg = (node.rotation * 180) / Math.PI;
-                svgContent += `  <g id="blob_${index}" transform="translate(${node.x.toFixed(2)}, ${node.y.toFixed(2)}) rotate(${rotationDeg.toFixed(2)})">`;
-                const layers = config.layers;
-                for (let i = 0; i < layers; i++) {
-                    let scale = i === 0 ? 1.0 : (i === 1 ? 0.72 : 0.72 - (i - 1) * (0.55 / (layers - 1)));
+                svgContent += `  <g transform="translate(${node.x.toFixed(2)}, ${node.y.toFixed(2)}) rotate(${rotationDeg.toFixed(2)})">`;
+                for (let i = 0; i < config.layers; i++) {
+                    let scale = i === 0 ? 1.0 : (i === 1 ? 0.72 : 0.72 - (i - 1) * (0.55 / (config.layers - 1)));
                     const color = config.colors[i % config.colors.length];
                     const d = getOrganicPathData(node.currentRadius * scale, node);
                     if (d) svgContent += `    <path d="${d}" fill="${color}" stroke="${color}" stroke-width="0.5" />`;
